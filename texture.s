@@ -11,14 +11,7 @@ nop
 nop
 nop
 nop			;nop			;ldtmu0
-nop
-nop
-nop
 nop						;sbwait
-nop			;mov r3.8a,1.0
-nop			;mov r3.8b,0.0
-nop			;mov r3.8c,0.0
-nop			;mov r3.8d,1.0
 mov tlbc,r4		;nop			;thrend
 nop
 nop ; nop; sbdone
