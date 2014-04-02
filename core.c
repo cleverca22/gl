@@ -13,14 +13,14 @@
 
 typedef struct vertex {
 	uint16_t x,y;
-	float z,w,u,v,dummy;
+	float z,w,u,v,r,g,b;
 } vertex;
 
 typedef struct v3dTexture {
 } v3dTexture;
 
 #define MAXPOINT 60000
-#define MAXINDEX 40000
+#define MAXINDEX 50000
 
 #ifndef ALIGN_UP
 #define ALIGN_UP(x,y)  ((x + (y)-1) & ~((y)-1))
@@ -32,6 +32,7 @@ vertex *nextVertex;
 int nextpoint = 0;
 
 float texturex,texturey;
+GLenum currentMode = 0;
 
 uint16_t *primitives = 0;
 int nextprimitive = 0;
@@ -82,11 +83,13 @@ struct V3D2MemoryReference *makeShader2Code() {
 	int ret;
 	FILE *fp;
 	struct V3D2MemoryReference *shaderCode;
-	char *path = "/media/videos/4tb/rpi/videocoreiv-qpu/qpu-tutorial/texture.raw";
+	char *path = "/media/videos/1tb/rpi/gl/texture.raw";
 	uint8_t *shadervirt;
 	
 	ret = stat(path,&buf);
+	if (ret) puts(strerror(errno));
 	assert(ret == 0);
+	assert(buf.st_size);
 	shaderCode = V3D2Allocate(buf.st_size);
 	shadervirt = (uint8_t*)V3D2mmap(shaderCode);
 	fp = fopen(path,"rb");
@@ -105,10 +108,9 @@ struct V3D2MemoryReference *loadTexture() {
 	uint8_t *virt;
 	
 	ret = stat(path,&buf);
-	printf("%d %d\n",ret,errno);
 	if (ret) puts(strerror(errno));
 	assert(ret == 0);
-	printf("allocating %d bytes\n",buf.st_size);
+	assert(buf.st_size);
 	buffer = V3D2Allocate(buf.st_size);
 	virt = (uint8_t*)V3D2mmap(buffer);
 	fp = fopen(path,"rb");
@@ -124,7 +126,6 @@ void initDispman() {
 
 	bcm_host_init();
 	display = vc_dispmanx_display_open(0);
-	puts("getting info");
 	ret = vc_dispmanx_display_get_info( display, &info);
 	assert(ret == 0);
 	printf( "Display is %d x %d\n", info.width, info.height );
@@ -172,7 +173,6 @@ DISPMANX_MODEINFO_T *initOpenGl() {
 	
 	primitiveList = V3D2Allocate(sizeof(uint16_t) * MAXINDEX);
 	primitives = V3D2mmap(primitiveList);
-	printf("primitives at %p\n",primitives);
 
 	for (i=0; i<MAXTEX; i++) textures[i] = NULL;
 	return &info;
@@ -228,10 +228,27 @@ GLAPI void GLAPIENTRY glVertex2f( GLfloat x, GLfloat y ){
 	int y2 = y;
 	glVertex2s(x2,y2);
 }
-GLAPI void GLAPIENTRY glVertex2s( GLshort x, GLshort y ){
-	static int a,b,c,d;
+static void glVertex2stri(GLshort x, GLshort y) {
+	nextVertex->x = x << 4;
+	nextVertex->y = y << 4;
+	nextVertex->z = 1;
+	nextVertex->w = 1;
+	nextVertex->u = texturex; // these refer to the texture in active2D
+	nextVertex->v = texturey;
+	nextVertex->r = r;
+	nextVertex->g = g;
+	nextVertex->b = b;
+	nextVertex++;
+
+	primitives[nextprimitive++] = nextpoint++;
+}
+static void glVertex2squad(GLshort x, GLshort y) {
+	static int pa,pb,pc,pd;
 	static int corner = 0;
-	if (nextprimitive > (MAXINDEX-50)) return;
+	if (nextprimitive > (MAXINDEX-50)) {
+		puts("primitive limit");
+		return;
+	}
 	
 	assert(nextpoint < MAXPOINT);
 	nextVertex->x = x << 4;
@@ -240,33 +257,41 @@ GLAPI void GLAPIENTRY glVertex2s( GLshort x, GLshort y ){
 	nextVertex->w = 1;
 	nextVertex->u = texturex; // these refer to the texture in active2D
 	nextVertex->v = texturey;
-	nextVertex->dummy = 0;
+	nextVertex->r = r;
+	nextVertex->g = g;
+	nextVertex->b = b;
 	nextVertex++;
+	
+	//printf("%dx%d == %f %f %f\n",x,y,r,g,b);
 	
 	// FIXME, optimize this
 	switch (corner) {
 	case 0:
-		a = nextpoint;
+		pa = nextpoint;
 		break;
 	case 1:
-		b = nextpoint;
+		pb = nextpoint;
 		break;
 	case 2:
-		c = nextpoint;
+		pc = nextpoint;
 		break;
 	case 3:
-		d = nextpoint;
-		primitives[nextprimitive++] = a;
-		primitives[nextprimitive++] = b;
-		primitives[nextprimitive++] = c;
-		primitives[nextprimitive++] = c;
-		primitives[nextprimitive++] = d;
-		primitives[nextprimitive++] = a;
+		pd = nextpoint;
+		primitives[nextprimitive++] = pa;
+		primitives[nextprimitive++] = pb;
+		primitives[nextprimitive++] = pc;
+		primitives[nextprimitive++] = pc;
+		primitives[nextprimitive++] = pd;
+		primitives[nextprimitive++] = pa;
 		corner = -1;
 		break;
 	}
 	corner++;
 	nextpoint++;
+}
+GLAPI void GLAPIENTRY glVertex2s( GLshort x, GLshort y ){
+	if (currentMode == GL_TRIANGLES) return glVertex2stri(x,y);
+	else if (currentMode == GL_QUADS) return glVertex2squad(x,y);
 }
 GLAPI void GLAPIENTRY glTexCoord2f( GLfloat s, GLfloat t ){
 	texturex = s;
@@ -284,9 +309,9 @@ struct V3D2MemoryReference *makeShaderRecord(struct V3D2MemoryReference *shaderC
 	uint8_t *shadervirt = (uint8_t*)V3D2mmap(shader);
 	uint8_t *p = shadervirt;
 	addbyte(&p, 0x01); // flags
-	addbyte(&p, 6*4); // stride FIXME, must match size of struct vertex
+	addbyte(&p, sizeof(vertex)); // stride
 	addbyte(&p, 0x2); // num uniforms (not used)
-	addbyte(&p, 2); // num varyings
+	addbyte(&p, 5); // num varyings
 	addword(&p, shaderCode->phys); // Fragment shader code
 	addword(&p, shaderUniforms->phys); // Fragment shader uniforms
 	addword(&p, vertexData->phys); // Vertex Data
@@ -394,8 +419,8 @@ uint8_t *makeRenderer(uint32_t outputFrame, struct V3D2MemoryReference *tileAllo
 	
 	// Clear color
 	addbyte(&p, 114);
-	addword(&p, 0x00000000); // transparent Black
-	addword(&p, 0x00000000); // 32 bit clear colours need to be repeated twice
+	addword(&p, 0xff888888); // transparent Black
+	addword(&p, 0xff888888); // 32 bit clear colours need to be repeated twice
 	addword(&p, 0); // clear zs and clear vg mask
 	addbyte(&p, 0); // clear stencil
 	
@@ -473,7 +498,7 @@ void glFlush(void) {
 	assert((textaddr & 0xfff) == 0);
 	uniformvirt[0] = textaddr;
 	uniformvirt[1] = (256 << 8) | (256<<20);
-	printf("config 0 %x\nconfig1 %x\n",uniformvirt[0],uniformvirt[1]);
+	//printf("config0 %x\nconfig1 %x\n",uniformvirt[0],uniformvirt[1]);
 	uniformvirt[2] = 0;
 	V3D2munmap(shaderUniforms);
 
@@ -502,15 +527,15 @@ void glFlush(void) {
 		job.jobid = 123;
 		job.outputType = opMemoryHandle;
 		status.jobid = 0;
-	printf("b\n");
 		ret = ioctl(v3d2_get_fd(),V3D2_COMPILE_CL,&job);
-		if (ret) {
-			printf("error %d %s from V3D2_COMPILE_CL\n",errno,strerror(errno));
+	free(binner); // the ioctl copies these to a kernel side buffer, these are no longer needed once ioctl returns
+	free(render);
+	if (ret) {
+		printf("error %d %s from V3D2_COMPILE_CL\n",errno,strerror(errno));
 	} else {
 		read(v3d2_get_fd(),&status,sizeof(status));
 		//printf("done frame %d\n",status.jobid);
 	}
-	printf("c\n");
 	/*printf("tileAllocation %d == ",tileAllocation->size);
 	temp = V3D2mmap(tileAllocation);
 	assert(temp);
@@ -524,12 +549,10 @@ void glFlush(void) {
 	assert(0);*/
 	
 	mem_unlock(mbox,dispman_mem_handle);
-	printf("d\n");
 	
 	nextpoint = 0;
 	nextprimitive = 0;
 	nextVertex = points;
-	free(binner);
 	V3D2Free(shaderUniforms);
 	V3D2Free(shaderRecord);
 }
@@ -542,6 +565,12 @@ void glBindTexture(GLenum target, GLuint texture) {
 		assert(0);
 		puts(__func__);
 	}
+}
+GLAPI void GLAPIENTRY glColor4fv( const GLfloat *v ) {
+	r = v[0];
+	g = v[1];
+	b = v[2];
+	a = v[3];
 }
 void glColor4f(GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha) {
 	r = red;
@@ -576,7 +605,14 @@ void glGenTextures(GLsizei n, GLuint *out) {
 	}
 }
 void glBegin(GLenum mode) {
-	assert(mode == GL_QUADS);
+	switch (mode) {
+	case GL_QUADS:
+	case GL_TRIANGLES:
+		currentMode = mode;
+		break;
+	default:
+		assert(0);
+	}
 }
 
 void glEnd(void) {
